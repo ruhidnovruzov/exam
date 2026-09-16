@@ -330,17 +330,24 @@ const getResults = async (req, res) => {
   const attemptsWithProfiles = await Promise.all(attempts.map(async (attempt) => {
     try {
       const ets = await resolveStudent(attempt.etsStudentId);
-      return { attempt, fin: ets.profile?.pin || null };
+      return {
+        attempt,
+        fin: ets.profile?.pin || null,
+        facultyName: ets.profile?.faculty?.name || null,
+        specialtyName: ets.profile?.specialty?.name || null,
+        groupName: ets.profile?.group?.name || attempt.qrup || null,
+      };
     } catch {
       // ETS müvəqqəti əlçatan olmadıqda daxili ID-ni FİN kimi göstərməyək.
-      return { attempt, fin: null };
+      return { attempt, fin: null, facultyName: null, specialtyName: null, groupName: attempt.qrup || null };
     }
   }));
 
-  res.json(attemptsWithProfiles.map(({ attempt, fin }) => {
+  res.json(attemptsWithProfiles.map(({ attempt, fin, facultyName, specialtyName, groupName }) => {
     const essay = attempt.essayYoxlamalari[0];
     return {
       id: attempt.id, ad: attempt.ad, soyad: attempt.soyad, fin,
+      facultyName, specialtyName, groupName,
       score: Number(attempt.bal || 0), finishedAt: attempt.cixisVaxti,
       speakingScore: attempt.speakingBal == null ? null : Number(attempt.speakingBal),
       essay: essay ? { assigned: true, graded: Boolean(essay.yoxlanildi), score: essay.bal, teacher: `${essay.muellim.ad} ${essay.muellim.soyad}` } : { assigned: false, graded: false },

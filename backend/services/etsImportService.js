@@ -86,7 +86,12 @@ const findEtsSubject = async (externalId) => {
   return subjects.find((subject) => String(subject?.id) === String(externalId));
 };
 
-const findEtsTeachers = async () => fetchEtsList('teachers');
+// `/teachers` browser sessiyası və idarəçi rolu tələb edir. Backendlərarası
+// sinxronizasiya üçün ETS-in x-api-key ilə qorunan xüsusi endpointi istifadə edilir.
+const findEtsTeachers = async () => {
+  const payload = await fetchJson(`${ETS_API_BASE_URL}/sync/teachers`);
+  return Array.isArray(payload?.teachers) ? payload.teachers : [];
+};
 
 const findEtsTeacher = async (externalId) => {
   if (!externalId) return null;
