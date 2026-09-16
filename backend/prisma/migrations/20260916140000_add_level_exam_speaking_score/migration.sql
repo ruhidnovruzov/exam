@@ -1,0 +1,2 @@
+ALTER TABLE "SeviyeCehd"
+ADD COLUMN "speakingBal" DOUBLE PRECISION;

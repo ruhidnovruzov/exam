@@ -1,0 +1,578 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// ============================================================
+// ETS - Elektron Təhsil Sistemi: İmtahan Modulu
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// bu prisma olacaq
+
+// ============================================================
+// ENUM-LAR
+// ============================================================
+
+enum Role {
+  ADMIN
+  KAFEDRA
+  MUELLIM
+}
+
+enum Bolme {
+  AZ
+  RU
+  EN
+}
+
+enum SualTipi {
+  TEST
+  NEZERI
+  DUSTUR
+  PRAKTIKI
+}
+
+enum ChetinlikDerece {
+  ASAN
+  ORTA
+  CETTIN
+}
+
+enum TestBankStatus {
+  GOZLEYIR
+  TESDIQLENDI
+  REDAKTEYE_GONDERILIB
+  LEGV_EDILDI
+}
+
+enum TestBankBlok {
+  ACIQDIR
+  BAGLIDIR
+}
+
+enum Source {
+  LOCAL
+  ETS
+}
+
+enum ImtahanNovu {
+  TEST
+  YAZILI
+}
+
+enum TehsilNovu {
+  EYANI
+  QIYABI
+}
+
+enum ImtahanSecimiNovu {
+  YENI
+  TEKRAR
+  YENI_TEKRAR
+}
+
+enum ImtahanStatus {
+  PLANLANIB
+  AKTIV
+  BITMIS
+  LEGV_EDILDI
+}
+
+enum TedrisIlFesil {
+  YAZ
+  PAYIZ
+}
+
+enum SeviyeSualTipi {
+  TEST
+  LISTENING
+  READING
+  ESSAY
+}
+
+// ============================================================
+// KAFEDRA
+// ============================================================
+
+model Kafedra {
+  id         Int      @id @default(autoincrement())
+  ad         String
+  kod        String   @unique
+  externalId String?  @unique
+  source     Source   @default(LOCAL)
+  yaradildi  DateTime @default(now())
+  yenilendi  DateTime @updatedAt
+
+  fennler    Fenn[]
+  istifadeci Istifadeci[]
+  testBanki  TestBanki[]
+}
+
+// ============================================================
+// FENN
+// ============================================================
+
+model Fenn {
+  id         Int        @id @default(autoincrement())
+  kafedraId  Int
+  kafedra    Kafedra    @relation(fields: [kafedraId], references: [id])
+  fennKodu   String     @unique
+  fennAdi    String
+  bolme      Bolme
+  externalId String?    @unique
+  source     Source     @default(LOCAL)
+  elavEden   Int
+  istifadeci Istifadeci @relation("FennElave", fields: [elavEden], references: [id])
+  yaradildi  DateTime   @default(now())
+  yenilendi  DateTime   @updatedAt
+
+  movzular    Movzu[]
+  testBanki   TestBanki[]
+  imtahanlar  Imtahan[]
+  muellimFenn MuellimFenn[]
+}
+
+// ============================================================
+// MOVZU
+// ============================================================
+
+model Movzu {
+  id         Int      @id @default(autoincrement())
+  fennId     Int
+  fenn       Fenn     @relation(fields: [fennId], references: [id])
+  ad         String
+  externalId String?  @unique
+  source     Source   @default(LOCAL)
+  yaradildi  DateTime @default(now())
+  yenilendi  DateTime @updatedAt
+
+  suallar          Sual[]
+  imtahanMovzulari ImtahanMovzu[]
+}
+
+// ============================================================
+// TEST BANKI
+// ============================================================
+
+model TestBanki {
+  id         Int            @id @default(autoincrement())
+  ad         String
+  fennId     Int
+  fenn       Fenn           @relation(fields: [fennId], references: [id])
+  kafedraId  Int
+  kafedra    Kafedra        @relation(fields: [kafedraId], references: [id])
+  elavEdenId Int
+  elavEden   Istifadeci     @relation("TestBankiElave", fields: [elavEdenId], references: [id])
+  status     TestBankStatus @default(GOZLEYIR)
+  blok       TestBankBlok   @default(BAGLIDIR)
+  yaradildi  DateTime       @default(now())
+  yenilendi  DateTime       @updatedAt
+
+  suallar    Sual[]
+  imtahanlar ImtahanTestBanki[]
+}
+
+// ============================================================
+// SUAL
+// ============================================================
+
+model Sual {
+  id          Int             @id @default(autoincrement())
+  testBankiId Int
+  testBanki   TestBanki       @relation(fields: [testBankiId], references: [id])
+  movzuId     Int
+  movzu       Movzu           @relation(fields: [movzuId], references: [id])
+  sualTipi    SualTipi
+  chetinlik   ChetinlikDerece
+  metn        String // sual mətni (HTML/markdown dəstəkləyə bilər)
+  sekil       String? // base64 və ya fayl yolu (ctrl+v ilə əlavə olunan şəkil)
+  yaradildi   DateTime        @default(now())
+  yenilendi   DateTime        @updatedAt
+
+  cavablar        Cavab[] // yalnız TEST tipi üçün doldurulur
+  imtahanSuallari ImtahanSual[]
+}
+
+// ============================================================
+// CAVAB (yalnız TEST tipi suallar üçün)
+// ============================================================
+
+model Cavab {
+  id        Int     @id @default(autoincrement())
+  sualId    Int
+  sual      Sual    @relation(fields: [sualId], references: [id], onDelete: Cascade)
+  metn      String
+  sekil     String? // cavabda da şəkil ola bilər
+  duzgundur Boolean @default(false)
+  sira      Int     @default(0) // cavabların sırası A, B, C, D
+
+  yaradildi DateTime @default(now())
+}
+
+// ============================================================
+// İSTİFADƏÇİ (Admin, Kafedra, Müəllim)
+// ============================================================
+
+model Istifadeci {
+  id        Int      @id @default(autoincrement())
+  ad        String
+  soyad     String
+  username  String   @unique
+  parol     String // bcrypt hash
+  rol       Role
+  etsId     String?  @unique // ETS müəllim ID-si
+  kafedraId Int?
+  kafedra   Kafedra? @relation(fields: [kafedraId], references: [id])
+  aktiv     Boolean  @default(true)
+  yaradildi DateTime @default(now())
+  yenilendi DateTime @updatedAt
+
+  // Müəllimin tədris etdiyi fənnlər
+  muellimFennler MuellimFenn[]
+
+  // İmtahanlara təhkim olunmuş yoxlamalar
+  imtahanTehkimleri ImtahanMuellim[]
+
+  // Əlavə etmə tarixi qeydləri
+  elaveFennler Fenn[]      @relation("FennElave")
+  testBankilar TestBanki[] @relation("TestBankiElave")
+
+  // Nəticə yoxlamaları
+  yoxlamalar NezeriNetic[]
+  seviyeImtahanTehkimleri SeviyeImtahanMuellim[]
+  seviyeEssayYoxlamalari SeviyeEssayYoxlama[]
+}
+
+// Müəllim ↔ Fənn çox-çoxa əlaqəsi
+model MuellimFenn {
+  id        Int        @id @default(autoincrement())
+  muellimId Int
+  muellim   Istifadeci @relation(fields: [muellimId], references: [id])
+  fennId    Int
+  fenn      Fenn       @relation(fields: [fennId], references: [id])
+
+  @@unique([muellimId, fennId])
+}
+
+// ============================================================
+// TƏDRİS İLİ
+// ============================================================
+
+model TedrisIl {
+  id        Int           @id @default(autoincrement())
+  il        Int // məs: 2026
+  fesil     TedrisIlFesil // YAZ / PAYIZ
+  label     String // məs: "2026 Yaz"
+  aktiv     Boolean       @default(true)
+  yaradildi DateTime      @default(now())
+
+  imtahanlar Imtahan[]
+
+  @@unique([il, fesil])
+}
+
+// ============================================================
+// İMTAHAN
+// ============================================================
+
+model Imtahan {
+  id            Int               @id @default(autoincrement())
+  ad            String
+  fennId        Int
+  fenn          Fenn              @relation(fields: [fennId], references: [id])
+  tedrisIlId    Int
+  tedrisIl      TedrisIl          @relation(fields: [tedrisIlId], references: [id])
+  imtahanNovu   ImtahanNovu
+  tehsilNovu    TehsilNovu
+  subjectGroupExternalId String? // ETS subject group external id for exam score sync
+  // seçilmiş sual tipləri (məs: TEST, NEZERI, DUSTUR, PRAKTIKI) — çoxlu seçim
+  sualTipleri   SualTipi[]
+  muddet        Int // dəqiqə ilə
+  kecidBali     Float
+  imtahanSecimi ImtahanSecimiNovu
+  baslamaVaxti  DateTime
+  bitmeVaxti    DateTime
+  status        ImtahanStatus     @default(PLANLANIB)
+  yaradildi     DateTime          @default(now())
+  yenilendi     DateTime          @updatedAt
+
+  // Test bankları (çox ola bilər)
+  testBankilar ImtahanTestBanki[]
+
+  // Seçilmiş mövzular (opsional — boşdursa bütün mövzular)
+  movzular ImtahanMovzu[]
+
+  // İmtahan tərkibi: hər sual tipi üçün say + bal
+  terkib ImtahanTerkib[]
+
+  // Tələbə təhkimləri
+  telebeleri ImtahanTelebe[]
+
+  // Müəllim təhkimləri (yoxlama üçün)
+  muellimler ImtahanMuellim[]
+
+  // Tələbə sualları (random çəkilmiş)
+  suallar ImtahanSual[]
+}
+
+// İmtahan ↔ Test Bankı
+model ImtahanTestBanki {
+  id          Int       @id @default(autoincrement())
+  imtahanId   Int
+  imtahan     Imtahan   @relation(fields: [imtahanId], references: [id])
+  testBankiId Int
+  testBanki   TestBanki @relation(fields: [testBankiId], references: [id])
+
+  @@unique([imtahanId, testBankiId])
+}
+
+// İmtahan üçün seçilmiş mövzular (opsional filtr)
+model ImtahanMovzu {
+  id        Int     @id @default(autoincrement())
+  imtahanId Int
+  imtahan   Imtahan @relation(fields: [imtahanId], references: [id])
+  movzuId   Int
+  movzu     Movzu   @relation(fields: [movzuId], references: [id])
+
+  @@unique([imtahanId, movzuId])
+}
+
+// ============================================================
+// İMTAHAN TƏRKİBİ
+// Şəkildəki cədvəl: hər sual tipi üçün say + bal
+// Test sual sayı, Test sual balı,
+// Nəzəri sual sayı, Nəzəri sual balı,
+// Düstur sual sayı, Düstur sual balı,
+// Praktiki sual sayı, Praktiki sual balı,
+// Yoxlama müddəti (gün)
+// ============================================================
+
+model ImtahanTerkib {
+  id             Int      @id @default(autoincrement())
+  imtahanId      Int
+  imtahan        Imtahan  @relation(fields: [imtahanId], references: [id], onDelete: Cascade)
+  sualTipi       SualTipi
+  sualSayi       Int      @default(0)
+  balPerSual     Float    @default(0)
+  yoxlamaMuddeti Int? // yalnız Nəzəri/Düstur/Praktiki üçün (gün)
+
+  @@unique([imtahanId, sualTipi])
+}
+
+// İmtahan ↔ Müəllim (yoxlama təhkimi)
+model ImtahanMuellim {
+  id            Int        @id @default(autoincrement())
+  imtahanId     Int
+  imtahan       Imtahan    @relation(fields: [imtahanId], references: [id], onDelete: Cascade)
+  muellimId     Int
+  muellim       Istifadeci @relation(fields: [muellimId], references: [id])
+  etsTeacherId  String
+  sualTipi      SualTipi
+  sualBaslangic Int // həmin tip üzrə 1-based sual nömrəsi
+  sualSon       Int
+  yaradildi     DateTime   @default(now())
+
+  @@unique([imtahanId, muellimId, sualTipi])
+}
+
+// ============================================================
+// TƏLƏBƏ
+// ============================================================
+
+model Telebe {
+  id        Int      @id @default(autoincrement())
+  etsId     String   @unique // ETS-dən gələn xarici ID
+  ad        String
+  soyad     String
+  ata       String?
+  qrup      String?
+  ixtisas   String?
+  kurs      Int?
+  email     String?
+  yaradildi DateTime @default(now())
+  yenilendi DateTime @updatedAt
+
+  imtahanlar ImtahanTelebe[]
+  suallar    ImtahanSual[]
+  neticeler  NezeriNetic[]
+}
+
+// İmtahan ↔ Tələbə (təhkim)
+model ImtahanTelebe {
+  id         Int       @id @default(autoincrement())
+  imtahanId  Int
+  imtahan    Imtahan   @relation(fields: [imtahanId], references: [id])
+  telebeId   Int
+  telebe     Telebe    @relation(fields: [telebeId], references: [id])
+  girisVaxti DateTime?
+  cixisVaxti DateTime?
+  yoxlamaKodu String? // anonim yoxlama kodu
+  bal        Float?
+  kecdi      Boolean?
+  yaradildi  DateTime  @default(now())
+
+  @@unique([imtahanId, telebeId])
+}
+
+// ============================================================
+// İMTAHAN SUALLARI (hər tələbəyə random çəkilmiş suallar)
+// ============================================================
+
+model ImtahanSual {
+  id             Int      @id @default(autoincrement())
+  imtahanId      Int
+  imtahan        Imtahan  @relation(fields: [imtahanId], references: [id])
+  telebeId       Int
+  telebe         Telebe   @relation(fields: [telebeId], references: [id])
+  sualId         Int
+  sual           Sual     @relation(fields: [sualId], references: [id])
+  sira           Int // sualın sıra nömrəsi tələbənin imtahanında
+  tipSira        Int      @default(0) // həmin sual tipi üzrə sıra (1-based)
+  // Test tipli suallar üçün:
+  secilenCavabId Int? // tələbənin seçdiyi cavab ID-si
+  // Nəzəri/Düstur/Praktiki üçün:
+  yaziliCavab    String? // tələbənin yazdığı cavab
+  bal            Float?
+  duzgundur      Boolean?
+  yaradildi      DateTime @default(now())
+
+  nezeriNetic NezeriNetic?
+
+  @@unique([imtahanId, telebeId, sualId])
+}
+
+// ============================================================
+// NƏZƏRİ İMTAHAN NƏTİCƏLƏRİ
+// Müəllim tərəfindən yazılı/nəzəri/praktiki/düstur
+// sualların cavablarını yoxlayır
+// ============================================================
+
+model NezeriNetic {
+  id            Int         @id @default(autoincrement())
+  telebeId      Int
+  telebe        Telebe      @relation(fields: [telebeId], references: [id])
+  imtahanSualId Int        @unique
+  imtahanSual   ImtahanSual @relation(fields: [imtahanSualId], references: [id])
+  yoxlayanId    Int
+  yoxlayan      Istifadeci  @relation(fields: [yoxlayanId], references: [id])
+  verileBal     Float
+  qeyd          String?
+  yoxlanildi    DateTime   @default(now())
+}
+
+// ============================================================
+// İNGİLİS DİLİ SƏVİYYƏ MÜƏYYƏNLƏŞDİRMƏ İMTAHANI
+// Bu imtahan ETS-dəki I kurs bakalavr tələbələri üçün ayrıca axındır.
+// ============================================================
+
+model SeviyeImtahani {
+  id            Int      @id @default(autoincrement())
+  ad            String
+  muddet        Int      @default(90)
+  baslamaVaxti  DateTime
+  bitmeVaxti    DateTime
+  aktiv         Boolean  @default(false)
+  yaradildi     DateTime @default(now())
+  yenilendi     DateTime @updatedAt
+
+  suallar       SeviyeSual[]
+  cehdler       SeviyeCehd[]
+  muellimler    SeviyeImtahanMuellim[]
+}
+
+model SeviyeSual {
+  id              Int             @id @default(autoincrement())
+  seviyeImtahanId Int
+  seviyeImtahan   SeviyeImtahani @relation(fields: [seviyeImtahanId], references: [id], onDelete: Cascade)
+  sualTipi        SeviyeSualTipi
+  kateqoriya      String?
+  seviye          String?
+  metn            String
+  mediaUrl        String?
+  variantlar      Json?
+  duzgunCavab     String?
+  bal             Float           @default(1)
+  sira            Int             @default(0)
+  yaradildi       DateTime        @default(now())
+  yenilendi       DateTime        @updatedAt
+
+  cavablar        SeviyeCavab[]
+  essayYoxlamalari SeviyeEssayYoxlama[]
+}
+
+model SeviyeCehd {
+  id              Int             @id @default(autoincrement())
+  seviyeImtahanId Int
+  seviyeImtahan   SeviyeImtahani @relation(fields: [seviyeImtahanId], references: [id], onDelete: Cascade)
+  etsStudentId    String
+  ad              String
+  soyad           String
+  qrup            String?
+  girisVaxti      DateTime?
+  cixisVaxti      DateTime?
+  bal             Float?
+  speakingBal     Float?
+  yaradildi       DateTime        @default(now())
+  yenilendi       DateTime        @updatedAt
+
+  cavablar        SeviyeCavab[]
+  essayYoxlamalari SeviyeEssayYoxlama[]
+
+  @@unique([seviyeImtahanId, etsStudentId])
+}
+
+model SeviyeCavab {
+  id          Int          @id @default(autoincrement())
+  cehdId      Int
+  cehd        SeviyeCehd  @relation(fields: [cehdId], references: [id], onDelete: Cascade)
+  sualId      Int
+  sual        SeviyeSual  @relation(fields: [sualId], references: [id], onDelete: Cascade)
+  cavab       String?
+  bal         Float?
+  kilidlendi  Boolean      @default(false)
+  kilidliVahidler Json?
+  yaradildi   DateTime     @default(now())
+  yenilendi   DateTime     @updatedAt
+
+  essayYoxlama SeviyeEssayYoxlama?
+
+  @@unique([cehdId, sualId])
+}
+
+model SeviyeImtahanMuellim {
+  id               Int             @id @default(autoincrement())
+  seviyeImtahanId Int
+  seviyeImtahan   SeviyeImtahani  @relation(fields: [seviyeImtahanId], references: [id], onDelete: Cascade)
+  muellimId       Int
+  muellim         Istifadeci      @relation(fields: [muellimId], references: [id], onDelete: Cascade)
+  etsTeacherId    String
+  yaradildi       DateTime        @default(now())
+
+  @@unique([seviyeImtahanId, muellimId])
+}
+
+model SeviyeEssayYoxlama {
+  id          Int          @id @default(autoincrement())
+  cehdId      Int
+  cehd        SeviyeCehd  @relation(fields: [cehdId], references: [id], onDelete: Cascade)
+  sualId      Int
+  sual        SeviyeSual  @relation(fields: [sualId], references: [id], onDelete: Cascade)
+  cavabId     Int          @unique
+  cavab       SeviyeCavab @relation(fields: [cavabId], references: [id], onDelete: Cascade)
+  muellimId   Int
+  muellim     Istifadeci  @relation(fields: [muellimId], references: [id], onDelete: Cascade)
+  bal         Float?
+  qeyd        String?
+  yoxlanildi  DateTime?
+  yaradildi   DateTime     @default(now())
+  yenilendi   DateTime     @updatedAt
+
+  @@unique([cehdId, sualId])
+  @@index([muellimId, yoxlanildi])
+}
