@@ -473,6 +473,9 @@ model NezeriNetic {
 
 model SeviyeImtahani {
   id            Int      @id @default(autoincrement())
+  seriyaId      Int?
+  seriya        SeviyeImtahanSeriyasi? @relation(fields: [seriyaId], references: [id])
+  sessiyaNo     Int      @default(1)
   ad            String
   muddet        Int      @default(90)
   baslamaVaxti  DateTime
@@ -484,6 +487,34 @@ model SeviyeImtahani {
   suallar       SeviyeSual[]
   cehdler       SeviyeCehd[]
   muellimler    SeviyeImtahanMuellim[]
+
+  @@unique([seriyaId, sessiyaNo])
+  @@index([seriyaId, baslamaVaxti])
+}
+
+model SeviyeImtahanSeriyasi {
+  id          Int      @id @default(autoincrement())
+  ad          String
+  aktiv       Boolean  @default(true)
+  yaradildi   DateTime @default(now())
+  yenilendi   DateTime @updatedAt
+
+  sessiyalar  SeviyeImtahani[]
+  istiraklar  SeviyeImtahanIstirak[]
+}
+
+// Tələbə günlərə əvvəlcədən bölünmür. İlk girişdə bu qeyd atomik yaranır
+// və tələbənin eyni seriyanın başqa günündə ikinci dəfə iştirakını bloklayır.
+model SeviyeImtahanIstirak {
+  id            Int      @id @default(autoincrement())
+  seriyaId      Int
+  seriya        SeviyeImtahanSeriyasi @relation(fields: [seriyaId], references: [id], onDelete: Restrict)
+  etsStudentId  String
+  cehdId        Int?     @unique
+  cehd          SeviyeCehd? @relation(fields: [cehdId], references: [id], onDelete: Restrict)
+  yaradildi     DateTime @default(now())
+
+  @@unique([seriyaId, etsStudentId])
 }
 
 model SeviyeSual {
@@ -523,6 +554,7 @@ model SeviyeCehd {
 
   cavablar        SeviyeCavab[]
   essayYoxlamalari SeviyeEssayYoxlama[]
+  istirak          SeviyeImtahanIstirak?
 
   @@unique([seviyeImtahanId, etsStudentId])
 }

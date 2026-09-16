@@ -15,6 +15,8 @@ export type LevelQuestion = {
 };
 
 export const getLevelConfig = async () => (await adminClient.get('/')).data;
+export const getLevelExams = async () => (await adminClient.get('/list')).data;
+export const getLevelConfigById = async (id: number) => (await adminClient.get(`/${id}`)).data;
 export const saveLevelConfig = async (data: unknown) => (await adminClient.post('/', data)).data;
 export const getLevelQuestions = async (id: number): Promise<LevelQuestion[]> => (await adminClient.get(`/${id}/questions`)).data;
 export const createLevelQuestion = async (id: number, data: unknown) => (await adminClient.post(`/${id}/questions`, data)).data;

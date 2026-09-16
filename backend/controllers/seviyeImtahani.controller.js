@@ -215,14 +215,15 @@ const activeExam = () => prisma.seviyeImtahani.findFirst({
   orderBy: { yenilendi: 'desc' },
 });
 
-const ensureExamQuestionsMutable = async (examId, tx = prisma) => {
-  const startedAttempt = await tx.seviyeCehd.findFirst({
-    where: { seviyeImtahanId: examId, girisVaxti: { not: null } },
-    select: { id: true },
+const getExams = async (_req, res) => {
+  const exams = await prisma.seviyeImtahani.findMany({
+    include: {
+      seriya: { select: { id: true, ad: true } },
+      _count: { select: { suallar: true, cehdler: true } },
+    },
+    orderBy: [{ baslamaVaxti: 'desc' }, { id: 'desc' }],
   });
-  if (startedAttempt) {
-    throw Object.assign(new Error('İmtahan başladıqdan sonra sualları dəyişmək olmaz.'), { status: 409 });
-  }
+  res.json(exams);
 };
 
 const hasSubmittedEssay = (answer) => {
@@ -285,6 +286,19 @@ const getConfig = async (_req, res) => {
       _count: { select: { suallar: true, cehdler: true } },
     },
   });
+  res.json(exam);
+};
+
+const getConfigById = async (req, res) => {
+  const exam = await prisma.seviyeImtahani.findUnique({
+    where: { id: Number(req.params.id) },
+    include: {
+      seriya: { select: { id: true, ad: true } },
+      muellimler: { include: { muellim: { select: { id: true, ad: true, soyad: true, username: true, etsId: true } } }, orderBy: { muellim: { soyad: 'asc' } } },
+      _count: { select: { suallar: true, cehdler: true } },
+    },
+  });
+  if (!exam) return res.status(404).json({ message: 'Səviyyə imtahanı tapılmadı.' });
   res.json(exam);
 };
 
@@ -381,7 +395,7 @@ const setSpeakingScore = async (req, res) => {
 };
 
 const saveConfig = async (req, res) => {
-  const { id, ad, muddet, baslamaVaxti, bitmeVaxti, aktiv } = req.body;
+  const { id, ad, muddet, baslamaVaxti, bitmeVaxti, aktiv, seriyaId } = req.body;
   if (!ad || !muddet || !baslamaVaxti || !bitmeVaxti) {
     return res.status(400).json({ message: 'Ad, müddət, başlama və bitmə vaxtı tələb olunur.' });
   }
@@ -394,13 +408,23 @@ const saveConfig = async (req, res) => {
   try {
     const exam = await prisma.$transaction(async (tx) => {
       if (id) {
-        const existing = await tx.seviyeImtahani.findUnique({ where: { id: Number(id) }, select: { id: true } });
+        const existing = await tx.seviyeImtahani.findUnique({ where: { id: Number(id) }, select: { id: true, seriyaId: true } });
         if (!existing) throw Object.assign(new Error('Səviyyə imtahanı tapılmadı.'), { status: 404 });
       }
       if (data.aktiv) await tx.seviyeImtahani.updateMany({ where: id ? { id: { not: Number(id) } } : undefined, data: { aktiv: false } });
-      return id
-        ? tx.seviyeImtahani.update({ where: { id: Number(id) }, data })
-        : tx.seviyeImtahani.create({ data });
+      if (id) return tx.seviyeImtahani.update({ where: { id: Number(id) }, data });
+
+      let targetSeriesId = Number(seriyaId) || null;
+      if (!targetSeriesId) {
+        const latest = await tx.seviyeImtahani.findFirst({ where: { seriyaId: { not: null } }, orderBy: { yaradildi: 'desc' }, select: { seriyaId: true } });
+        targetSeriesId = latest?.seriyaId || null;
+      }
+      if (!targetSeriesId) {
+        const series = await tx.seviyeImtahanSeriyasi.create({ data: { ad: data.ad } });
+        targetSeriesId = series.id;
+      }
+      const aggregate = await tx.seviyeImtahani.aggregate({ where: { seriyaId: targetSeriesId }, _max: { sessiyaNo: true } });
+      return tx.seviyeImtahani.create({ data: { ...data, seriyaId: targetSeriesId, sessiyaNo: Number(aggregate._max.sessiyaNo || 0) + 1 } });
     });
     res.json(exam);
   } catch (error) {
@@ -463,7 +487,6 @@ const createQuestion = async (req, res) => {
 
   const exam = await prisma.seviyeImtahani.findUnique({ where: { id: examId }, select: { id: true } });
   if (!exam) return res.status(404).json({ message: 'Səviyyə imtahanı tapılmadı.' });
-  try { await ensureExamQuestionsMutable(examId); } catch (error) { return res.status(error.status || 500).json({ message: error.message }); }
   if (sualTipi === 'ESSAY') {
     const existingEssay = await prisma.seviyeSual.findFirst({ where: { seviyeImtahanId: examId, sualTipi: 'ESSAY' }, select: { id: true } });
     if (existingEssay) return res.status(400).json({ message: 'Bu imtahan üçün essay mövzuları artıq əlavə olunub.' });
@@ -500,7 +523,6 @@ const updateQuestion = async (req, res) => {
   const questionId = Number(req.params.questionId);
   const existing = await prisma.seviyeSual.findFirst({ where: { id: questionId, seviyeImtahanId: examId } });
   if (!existing) return res.status(404).json({ message: 'Sual tapılmadı.' });
-  try { await ensureExamQuestionsMutable(examId); } catch (error) { return res.status(error.status || 500).json({ message: error.message }); }
   const { sualTipi = existing.sualTipi, kateqoriya, seviye, metn, mediaUrl, variantlar, duzgunCavab, bal, sira, readingNo, listeningNo } = req.body;
   if (!['TEST', 'LISTENING', 'READING', 'ESSAY'].includes(sualTipi)) return res.status(400).json({ message: 'Düzgün sual tipi tələb olunur.' });
   if (!['ESSAY', 'LISTENING'].includes(sualTipi) && !metn) return res.status(400).json({ message: 'Sual mətnləri tələb olunur.' });
@@ -538,7 +560,6 @@ const removeQuestion = async (req, res) => {
   const questionId = Number(req.params.questionId);
   const question = await prisma.seviyeSual.findFirst({ where: { id: questionId, seviyeImtahanId: examId }, select: { id: true } });
   if (!question) return res.status(404).json({ message: 'Sual tapılmadı.' });
-  try { await ensureExamQuestionsMutable(examId); } catch (error) { return res.status(error.status || 500).json({ message: error.message }); }
   await prisma.seviyeSual.delete({ where: { id: questionId } });
   res.json({ message: 'Sual silindi.' });
 };
@@ -549,7 +570,6 @@ const importTestQuestions = async (req, res) => {
   try {
     const exam = await prisma.seviyeImtahani.findUnique({ where: { id: examId }, select: { id: true } });
     if (!exam) return res.status(404).json({ message: 'Səviyyə imtahanı tapılmadı.' });
-    await ensureExamQuestionsMutable(examId);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(req.file.buffer);
     const sheet = workbook.worksheets[0];
@@ -610,17 +630,43 @@ const studentLogin = async (req, res) => {
       .map((value) => value.trim().toUpperCase())
       .filter(Boolean);
     const isTestAccount = testIdentifiers.includes(String(identifier).trim().toUpperCase());
-    const previousFinished = await prisma.seviyeCehd.findFirst({ where: { etsStudentId: String(ets.studentId), cixisVaxti: { not: null } } });
-    if (previousFinished && !isTestAccount) return res.status(403).json({ message: 'Səviyyə imtahanında iştirak hüququndan artıq istifadə etmisiniz.' });
-    const attempt = await prisma.seviyeCehd.upsert({
-      where: { seviyeImtahanId_etsStudentId: { seviyeImtahanId: exam.id, etsStudentId: String(ets.studentId) } },
-      update: {},
-      create: { seviyeImtahanId: exam.id, etsStudentId: String(ets.studentId), ad: profile.firstName || '', soyad: profile.lastName || '', qrup: profile.group?.name || profile.groupName || null },
-    });
+    const studentId = String(ets.studentId);
+    let attempt;
+    if (isTestAccount || !exam.seriyaId) {
+      attempt = await prisma.seviyeCehd.upsert({
+        where: { seviyeImtahanId_etsStudentId: { seviyeImtahanId: exam.id, etsStudentId: studentId } },
+        update: {},
+        create: { seviyeImtahanId: exam.id, etsStudentId: studentId, ad: profile.firstName || '', soyad: profile.lastName || '', qrup: profile.group?.name || profile.groupName || null },
+      });
+    } else {
+      try {
+        attempt = await prisma.$transaction(async (tx) => {
+          const existingClaim = await tx.seviyeImtahanIstirak.findUnique({
+            where: { seriyaId_etsStudentId: { seriyaId: exam.seriyaId, etsStudentId: studentId } },
+          });
+          if (existingClaim) {
+            const existingAttempt = existingClaim.cehdId
+              ? await tx.seviyeCehd.findUnique({ where: { id: existingClaim.cehdId } })
+              : null;
+            if (existingAttempt?.seviyeImtahanId === exam.id) return existingAttempt;
+            throw Object.assign(new Error('Səviyyə imtahanında iştirak hüququndan artıq istifadə etmisiniz.'), { status: 403 });
+          }
+          const created = await tx.seviyeCehd.create({
+            data: { seviyeImtahanId: exam.id, etsStudentId: studentId, ad: profile.firstName || '', soyad: profile.lastName || '', qrup: profile.group?.name || profile.groupName || null },
+          });
+          await tx.seviyeImtahanIstirak.create({ data: { seriyaId: exam.seriyaId, etsStudentId: studentId, cehdId: created.id } });
+          return created;
+        });
+      } catch (claimError) {
+        if (claimError.status === 403) throw claimError;
+        if (claimError.code === 'P2002') throw Object.assign(new Error('Səviyyə imtahanında iştirak hüququndan artıq istifadə etmisiniz.'), { status: 403 });
+        throw claimError;
+      }
+    }
     const token = jwt.sign({ rol: 'LEVEL_STUDENT', levelAttemptId: attempt.id, etsStudentId: ets.studentId, testAccount: isTestAccount }, process.env.JWT_SECRET, { expiresIn: '8h' });
     res.json({ token, attemptId: attempt.id, exam: { id: exam.id, ad: exam.ad } });
   } catch (error) {
-    res.status(401).json({ message: error.message || 'Giriş uğursuz oldu.' });
+    res.status(error.status || 401).json({ message: error.message || 'Giriş uğursuz oldu.' });
   }
 };
 
@@ -816,4 +862,4 @@ const restartTestStudentExam = async (req, res) => {
   res.json({ message: 'Test cəhdi sıfırlandı.' });
 };
 
-module.exports = { getConfig, saveConfig, getQuestions, createQuestion, updateQuestion, removeQuestion, importTestQuestions, uploadListeningAudio, setEssayTeachers, getResults, setSpeakingScore, studentLogin, getStudentExam, answerStudentQuestion, finishStudentExam, restartTestStudentExam, finalizeExpiredLevelAttempts };
+module.exports = { getExams, getConfig, getConfigById, saveConfig, getQuestions, createQuestion, updateQuestion, removeQuestion, importTestQuestions, uploadListeningAudio, setEssayTeachers, getResults, setSpeakingScore, studentLogin, getStudentExam, answerStudentQuestion, finishStudentExam, restartTestStudentExam, finalizeExpiredLevelAttempts };

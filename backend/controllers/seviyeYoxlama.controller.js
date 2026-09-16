@@ -17,12 +17,15 @@ const parseEssay = (value) => {
   }
 };
 
+const gradingDeadline = (exam) => new Date(new Date(exam.bitmeVaxti).getTime() + 48 * 60 * 60 * 1000);
+
 const getMyLevelAssignments = async (req, res) => {
   const muellimId = ensureMuellim(req, res); if (!muellimId) return;
   const rows = await prisma.seviyeImtahanMuellim.findMany({
     where: { muellimId },
     include: { seviyeImtahan: true },
-    orderBy: { seviyeImtahan: { bitmeVaxti: 'desc' } },
+    // The teacher UI prioritizes the nearest 48-hour grading deadline.
+    orderBy: { seviyeImtahan: { bitmeVaxti: 'asc' } },
   });
   const data = await Promise.all(rows.map(async (row) => {
     const where = { muellimId, cehd: { seviyeImtahanId: row.seviyeImtahanId } };
@@ -30,7 +33,13 @@ const getMyLevelAssignments = async (req, res) => {
       prisma.seviyeEssayYoxlama.count({ where }),
       prisma.seviyeEssayYoxlama.count({ where: { ...where, yoxlanildi: { not: null } } }),
     ]);
-    return { exam: row.seviyeImtahan, stats: { total, graded, pending: total - graded } };
+    const deadlineAt = gradingDeadline(row.seviyeImtahan);
+    return {
+      exam: row.seviyeImtahan,
+      gradingDeadlineAt: deadlineAt,
+      gradingOpen: new Date() < deadlineAt,
+      stats: { total, graded, pending: total - graded },
+    };
   }));
   res.json(data);
 };
@@ -52,7 +61,14 @@ const getLevelEssayQueue = async (req, res) => {
       maxBal: 5, bal: row.bal, qeyd: row.qeyd, yoxlanilib: Boolean(row.yoxlanildi),
     };
   });
-  res.json({ stats: { total: queue.length, graded: queue.filter((item) => item.yoxlanilib).length, pending: queue.filter((item) => !item.yoxlanilib).length }, queue });
+  const exam = await prisma.seviyeImtahani.findUnique({ where: { id: examId }, select: { bitmeVaxti: true } });
+  const deadlineAt = exam ? gradingDeadline(exam) : null;
+  res.json({
+    gradingDeadlineAt: deadlineAt,
+    gradingOpen: Boolean(deadlineAt && new Date() < deadlineAt),
+    stats: { total: queue.length, graded: queue.filter((item) => item.yoxlanilib).length, pending: queue.filter((item) => !item.yoxlanilib).length },
+    queue,
+  });
 };
 
 const gradeLevelEssay = async (req, res) => {
@@ -61,8 +77,18 @@ const gradeLevelEssay = async (req, res) => {
   const bal = Number(req.body.bal);
   const qeyd = String(req.body.qeyd || '').trim() || null;
   if (!Number.isFinite(bal)) return res.status(400).json({ message: 'Bal tələb olunur.' });
-  const row = await prisma.seviyeEssayYoxlama.findFirst({ where: { id, muellimId }, include: { sual: true } });
+  const row = await prisma.seviyeEssayYoxlama.findFirst({
+    where: { id, muellimId },
+    include: { sual: true, cehd: { include: { seviyeImtahan: true } } },
+  });
   if (!row) return res.status(404).json({ message: 'Essay yoxlama növbəsində tapılmadı.' });
+  const deadlineAt = gradingDeadline(row.cehd.seviyeImtahan);
+  if (new Date() >= deadlineAt) {
+    return res.status(403).json({
+      message: 'Bu sessiyanın esse qiymətləndirmə müddəti bitib.',
+      gradingDeadlineAt: deadlineAt,
+    });
+  }
   const score = Math.min(Math.max(0, bal), 5);
   await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "SeviyeCehd" WHERE id = ${row.cehdId} FOR UPDATE`;

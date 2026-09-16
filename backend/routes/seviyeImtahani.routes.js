@@ -14,7 +14,9 @@ router.post('/student/restart', authenticate, c.restartTestStudentExam);
 
 router.use(authenticate, authorize('ADMIN'));
 router.get('/', c.getConfig);
+router.get('/list', c.getExams);
 router.post('/', c.saveConfig);
+router.get('/:id', c.getConfigById);
 router.post('/:id/muellimler', c.setEssayTeachers);
 router.get('/:id/netice', c.getResults);
 router.post('/:id/netice/:attemptId/speaking', c.setSpeakingScore);
