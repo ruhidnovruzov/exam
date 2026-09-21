@@ -34,3 +34,19 @@ export const assignLevelEssayTeachers = async (id: number, etsTeacherIds: number
 export const getLevelResults = async (id: number) => (await adminClient.get(`/${id}/netice`)).data;
 export const saveLevelSpeakingScore = async (examId: number, attemptId: number, bal: number) =>
   (await adminClient.post(`/${examId}/netice/${attemptId}/speaking`, { bal })).data;
+export const importLevelSpeakingScores = async (
+  examId: number,
+  file: File,
+  options: { dryRun?: boolean; overwrite?: boolean; sheetName?: string; confirm?: 'APPLY' } = {},
+) => {
+  const form = new FormData();
+  form.append('file', file);
+  if (options.sheetName) form.append('sheetName', options.sheetName);
+  return (await adminClient.post(`/${examId}/netice/speaking/import`, form, {
+    params: {
+      dryRun: options.dryRun ?? true,
+      overwrite: options.overwrite ?? false,
+      ...(options.confirm ? { confirm: options.confirm } : {}),
+    },
+  })).data;
+};

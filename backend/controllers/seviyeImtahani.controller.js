@@ -7,6 +7,11 @@ const prisma = require('../prismaClient');
 const { resolveStudent } = require('../services/etsAuthService');
 const { verifyDailyExamPassword } = require('../services/dailyExamPasswordService');
 const { ensureTeachersFromEtsIds } = require('../services/teacherSyncService');
+const {
+  DEFAULT_SHEET_NAME,
+  parseSpeakingWorkbook,
+  matchSpeakingRows,
+} = require('../services/speakingImportService');
 
 const normalize = (value) => String(value ?? '').trim();
 const cellValue = (cell) => normalize(cell?.text ?? cell?.value);
@@ -391,6 +396,136 @@ const setSpeakingScore = async (req, res) => {
     res.json({ message: 'Speaking balı yadda saxlanıldı.', speakingScore: Number(updated.speakingBal), score: Number(updated.bal || 0) });
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message || 'Speaking balı yadda saxlanmadı.' });
+  }
+};
+
+const mapWithConcurrency = async (items, concurrency, mapper) => {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+};
+
+const importSpeakingScores = async (req, res) => {
+  const examId = Number(req.params.id);
+  const dryRun = String(req.query.dryRun ?? 'true').toLowerCase() !== 'false';
+  const overwrite = String(req.query.overwrite ?? 'false').toLowerCase() === 'true';
+  const sheetName = normalize(req.body?.sheetName || req.query.sheetName) || DEFAULT_SHEET_NAME;
+
+  if (!Number.isInteger(examId) || examId <= 0) return res.status(400).json({ message: 'İmtahan ID-si düzgün deyil.' });
+  if (!req.file?.buffer) return res.status(400).json({ message: 'XLSX faylı tələb olunur.' });
+  if (!dryRun && req.query.confirm !== 'APPLY') {
+    return res.status(400).json({ message: 'Yazmaq üçün dryRun=false və confirm=APPLY göndərilməlidir.' });
+  }
+
+  try {
+    const exam = await prisma.seviyeImtahani.findUnique({ where: { id: examId }, select: { id: true, ad: true } });
+    if (!exam) return res.status(404).json({ message: 'Səviyyə imtahanı tapılmadı.' });
+
+    const parsed = await parseSpeakingWorkbook(req.file.buffer, sheetName);
+    const attempts = await prisma.seviyeCehd.findMany({
+      where: { seviyeImtahanId: examId, cixisVaxti: { not: null } },
+      select: { id: true, etsStudentId: true, ad: true, soyad: true, speakingBal: true },
+    });
+
+    let profileFailures = 0;
+    const candidates = await mapWithConcurrency(attempts, 10, async (attempt) => {
+      try {
+        const ets = await resolveStudent(attempt.etsStudentId);
+        return {
+          attemptId: attempt.id,
+          firstName: ets.profile?.firstName || attempt.ad,
+          lastName: ets.profile?.lastName || attempt.soyad,
+          fatherName: ets.profile?.fatherName || '',
+          currentSpeakingScore: attempt.speakingBal == null ? null : Number(attempt.speakingBal),
+        };
+      } catch {
+        profileFailures += 1;
+        return {
+          attemptId: attempt.id,
+          firstName: attempt.ad,
+          lastName: attempt.soyad,
+          fatherName: '',
+          currentSpeakingScore: attempt.speakingBal == null ? null : Number(attempt.speakingBal),
+        };
+      }
+    });
+
+    const plan = matchSpeakingRows(parsed.scoredRows, candidates);
+    const candidateByAttemptId = new Map(candidates.map((item) => [item.attemptId, item]));
+    const unchanged = [];
+    const conflicts = [];
+    const ready = [];
+    for (const match of plan.matches) {
+      const current = candidateByAttemptId.get(match.attemptId)?.currentSpeakingScore;
+      if (current != null && current === match.score) unchanged.push({ ...match, currentSpeakingScore: current });
+      else if (current != null && !overwrite) conflicts.push({ ...match, currentSpeakingScore: current, reason: 'existing_score_not_overwritten' });
+      else ready.push({ ...match, currentSpeakingScore: current });
+    }
+
+    let updated = 0;
+    if (!dryRun && ready.length) {
+      await prisma.$transaction(async (tx) => {
+        for (const item of ready) {
+          await tx.$queryRaw`SELECT id FROM "SeviyeCehd" WHERE id = ${item.attemptId} FOR UPDATE`;
+          const attempt = await tx.seviyeCehd.findFirst({
+            where: { id: item.attemptId, seviyeImtahanId: examId, cixisVaxti: { not: null } },
+            select: { id: true, speakingBal: true },
+          });
+          if (!attempt) throw Object.assign(new Error(`Cəhd artıq yazıla bilən vəziyyətdə deyil: ${item.attemptId}`), { status: 409 });
+          if (attempt.speakingBal != null && !overwrite) {
+            throw Object.assign(new Error(`Mövcud Speaking balı dəyişib: ${item.attemptId}`), { status: 409 });
+          }
+          const answerTotal = await tx.seviyeCavab.aggregate({ where: { cehdId: item.attemptId }, _sum: { bal: true } });
+          await tx.seviyeCehd.update({
+            where: { id: item.attemptId },
+            data: { speakingBal: item.score, bal: Number(answerTotal._sum.bal || 0) + item.score },
+          });
+          updated += 1;
+        }
+      }, { maxWait: 10000, timeout: 120000 });
+    }
+
+    res.json({
+      message: dryRun ? 'Dry-run tamamlandı; bazada dəyişiklik edilmədi.' : `${updated} Speaking balı yazıldı.`,
+      dryRun,
+      overwrite,
+      exam,
+      sheetName: parsed.sheetName,
+      summary: {
+        sheetRows: parsed.scoredRows.length + parsed.skippedRows.length,
+        numericScores: parsed.scoredRows.length,
+        zeroScores: parsed.scoredRows.filter((item) => item.score === 0).length,
+        skippedBlank: parsed.skippedRows.filter((item) => item.reason === 'blank_score').length,
+        skippedText: parsed.skippedRows.filter((item) => item.reason === 'non_numeric_score').length,
+        skippedInvalid: parsed.skippedRows.filter((item) => !['blank_score', 'non_numeric_score'].includes(item.reason)).length,
+        finishedExamAttempts: attempts.length,
+        etsProfileFailures: profileFailures,
+        exactMatches: plan.matches.length,
+        readyToWrite: ready.length,
+        unchanged: unchanged.length,
+        existingScoreConflicts: conflicts.length,
+        unresolved: plan.unresolved.length,
+        updated,
+      },
+      ready,
+      unchanged,
+      conflicts,
+      unresolved: plan.unresolved,
+      skippedRows: parsed.skippedRows,
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      message: error.message || 'Speaking balları import edilə bilmədi.',
+      ...(error.availableSheets ? { availableSheets: error.availableSheets } : {}),
+    });
   }
 };
 
@@ -862,4 +997,4 @@ const restartTestStudentExam = async (req, res) => {
   res.json({ message: 'Test cəhdi sıfırlandı.' });
 };
 
-module.exports = { getExams, getConfig, getConfigById, saveConfig, getQuestions, createQuestion, updateQuestion, removeQuestion, importTestQuestions, uploadListeningAudio, setEssayTeachers, getResults, setSpeakingScore, studentLogin, getStudentExam, answerStudentQuestion, finishStudentExam, restartTestStudentExam, finalizeExpiredLevelAttempts };
+module.exports = { getExams, getConfig, getConfigById, saveConfig, getQuestions, createQuestion, updateQuestion, removeQuestion, importTestQuestions, uploadListeningAudio, setEssayTeachers, getResults, setSpeakingScore, importSpeakingScores, studentLogin, getStudentExam, answerStudentQuestion, finishStudentExam, restartTestStudentExam, finalizeExpiredLevelAttempts };

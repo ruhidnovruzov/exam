@@ -20,6 +20,7 @@ router.get('/:id', c.getConfigById);
 router.post('/:id/muellimler', c.setEssayTeachers);
 router.get('/:id/netice', c.getResults);
 router.post('/:id/netice/:attemptId/speaking', c.setSpeakingScore);
+router.post('/:id/netice/speaking/import', upload.single('file'), c.importSpeakingScores);
 router.post('/listening-audio', upload.single('audio'), c.uploadListeningAudio);
 router.get('/:id/questions', c.getQuestions);
 router.post('/:id/questions', c.createQuestion);
