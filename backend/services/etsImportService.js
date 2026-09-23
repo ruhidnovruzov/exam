@@ -7,7 +7,17 @@ const ETS_API_BASE_URL = process.env.ETS_API_BASE_URL || 'http://localhost:5001/
 const ETS_API_KEY = process.env.ETS_API_KEY || '';
 const ETS_API_TOKEN = process.env.ETS_API_TOKEN || '';
 
-const fetchJson = (url) =>
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const retryDelayMs = (retryAfter, attempt) => {
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.max(1000, seconds * 1000);
+  const dateMs = Date.parse(String(retryAfter || ''));
+  if (Number.isFinite(dateMs)) return Math.max(1000, dateMs - Date.now());
+  return Math.min(30000, 1000 * (2 ** Math.min(attempt, 5)));
+};
+
+const fetchJsonOnce = (url) =>
   new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const client = parsed.protocol === 'https:' ? https : http;
@@ -44,13 +54,38 @@ const fetchJson = (url) =>
 
         const snippet = body ? (body.length > 1000 ? body.slice(0, 1000) + '...': body) : '';
         const msg = parsed?.message || parsed?.error || snippet || `Status ${res.statusCode}`;
-        reject(new Error(`ETS request failed with status ${res.statusCode}: ${msg}`));
+        const error = new Error(`ETS request failed with status ${res.statusCode}: ${msg}`);
+        error.status = res.statusCode;
+        error.retryAfter = res.headers['retry-after'];
+        reject(error);
       });
     });
 
     req.on('error', reject);
     req.end();
   });
+
+// ETS rate limit tətbiq etdikdə sorğunu itirmirik. Retry-After başlığına əməl
+// edilir; başlıq yoxdursa gözləmə müddəti tədricən artır və 30 saniyədə dayanır.
+// ETS_429_MAX_RETRIES=0 limitsiz retry deməkdir.
+const fetchJson = async (url) => {
+  const configuredMaxRetries = Number(process.env.ETS_429_MAX_RETRIES ?? 0);
+  const maxRetries = Number.isFinite(configuredMaxRetries) && configuredMaxRetries >= 0
+    ? configuredMaxRetries
+    : 0;
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fetchJsonOnce(url);
+    } catch (error) {
+      if (error?.status !== 429 || (maxRetries > 0 && attempt >= maxRetries)) throw error;
+      const delay = retryDelayMs(error.retryAfter, attempt);
+      attempt += 1;
+      console.warn(`[ETS rate limit] ${Math.ceil(delay / 1000)} saniyə sonra yenidən cəhd ediləcək (cəhd ${attempt}).`);
+      await wait(delay);
+    }
+  }
+};
 
 const normalizePayload = (payload) => (Array.isArray(payload) ? payload : payload?.data ?? []);
 

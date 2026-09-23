@@ -32,6 +32,8 @@ export const importLevelQuestions = async (id: number, file: File) => {
 };
 export const assignLevelEssayTeachers = async (id: number, etsTeacherIds: number[]) => (await adminClient.post(`/${id}/muellimler`, { etsTeacherIds })).data;
 export const getLevelResults = async (id: number) => (await adminClient.get(`/${id}/netice`)).data;
+export const exportLevelResults = async (id: number): Promise<Blob> =>
+  (await adminClient.get(`/${id}/netice/export`, { responseType: 'blob' })).data;
 export const saveLevelSpeakingScore = async (examId: number, attemptId: number, bal: number) =>
   (await adminClient.post(`/${examId}/netice/${attemptId}/speaking`, { bal })).data;
 export const importLevelSpeakingScores = async (

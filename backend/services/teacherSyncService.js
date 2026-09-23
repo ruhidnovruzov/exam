@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const prisma = require('../prismaClient');
-const { findEtsTeacher } = require('./etsImportService');
+const { findEtsTeacher, findEtsTeachers } = require('./etsImportService');
 
 const GRADABLE_TYPES = ['NEZERI', 'DUSTUR', 'PRAKTIKI'];
 
@@ -62,9 +62,28 @@ const ensureTeacherIstifadeci = async (profile, etsTeacherData = null) => {
 
 const ensureTeachersFromEtsIds = async (etsTeacherIds) => {
   const results = [];
-  for (const rawId of etsTeacherIds) {
+  const requestedIds = [...new Set(etsTeacherIds.map(String))];
+  const localTeachers = await prisma.istifadeci.findMany({
+    where: { etsId: { in: requestedIds }, rol: 'MUELLIM' },
+  });
+  const localByEtsId = new Map(localTeachers.map((teacher) => [String(teacher.etsId), teacher]));
+  const missingIds = requestedIds.filter((etsId) => !localByEtsId.has(etsId));
+  let etsById = new Map();
+
+  // Ayrı-ayrılıqda N sorğu əvəzinə çatışmayan müəllimlər üçün ETS-ə bir sorğu.
+  if (missingIds.length) {
+    const etsTeachers = await findEtsTeachers();
+    etsById = new Map(etsTeachers.map((teacher) => [String(teacher?.id), teacher]));
+  }
+
+  for (const rawId of requestedIds) {
     const etsId = String(rawId);
-    const teacherData = await findEtsTeacher(etsId);
+    const existing = localByEtsId.get(etsId);
+    if (existing) {
+      results.push({ etsId, istifadeci: existing, teacherData: null });
+      continue;
+    }
+    const teacherData = etsById.get(etsId);
     if (!teacherData) {
       throw new Error(`ETS müəllimi tapılmadı: ${etsId}`);
     }

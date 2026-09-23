@@ -413,6 +413,141 @@ const mapWithConcurrency = async (items, concurrency, mapper) => {
   return results;
 };
 
+const levelForScore = (value) => {
+  const score = Number(value);
+  if (!Number.isFinite(score) || score < 0 || score > 50) return { level: 'Yoxlanmalıdır', note: '—' };
+  if (score < 16) return { level: 'Beginner', note: 'A1' };
+  if (score < 25) return { level: 'Elementary', note: 'A2' };
+  if (score < 33) return { level: 'Pre-intermediate', note: 'B1' };
+  if (score < 40) return { level: 'Intermediate', note: 'B1+/B2' };
+  if (score < 46) return { level: 'Upper Intermediate', note: 'B2' };
+  return { level: 'Advanced', note: 'C1/C2' };
+};
+
+const exportLevelResults = async (req, res) => {
+  const examId = Number(req.params.id);
+  if (!Number.isInteger(examId) || examId <= 0) return res.status(400).json({ message: 'İmtahan ID-si düzgün deyil.' });
+
+  try {
+    const selectedExam = await prisma.seviyeImtahani.findUnique({
+      where: { id: examId },
+      select: { id: true, seriyaId: true, ad: true },
+    });
+    if (!selectedExam) return res.status(404).json({ message: 'Səviyyə imtahanı tapılmadı.' });
+
+    const sessions = selectedExam.seriyaId
+      ? await prisma.seviyeImtahani.findMany({ where: { seriyaId: selectedExam.seriyaId }, select: { id: true } })
+      : [{ id: selectedExam.id }];
+
+    const attempts = await prisma.seviyeCehd.findMany({
+      where: {
+        cixisVaxti: { not: null },
+        seviyeImtahanId: { in: sessions.map((session) => session.id) },
+      },
+      select: { etsStudentId: true, ad: true, soyad: true, qrup: true, bal: true },
+      orderBy: [{ soyad: 'asc' }, { ad: 'asc' }],
+    });
+
+    const rows = await mapWithConcurrency(attempts, 10, async (attempt) => {
+      let profile = null;
+      try {
+        profile = (await resolveStudent(attempt.etsStudentId)).profile;
+      } catch {
+        // ETS əlçatan olmadıqda hesabat yenə hazırlanır; məlum olmayan xanalar boş qalır.
+      }
+      const score = Number(attempt.bal || 0);
+      return {
+        fullName: `${attempt.ad} ${attempt.soyad}`.trim(),
+        lastName: attempt.soyad,
+        fin: profile?.pin || '',
+        faculty: profile?.faculty?.name || '',
+        specialty: profile?.specialty?.name || '',
+        group: profile?.group?.name || attempt.qrup || '',
+        score,
+        ...levelForScore(score),
+      };
+    });
+
+    rows.sort((left, right) => left.lastName.localeCompare(right.lastName, 'az') || left.fullName.localeCompare(right.fullName, 'az'));
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'İmtahan sistemi';
+    workbook.created = new Date();
+    workbook.calcProperties.fullCalcOnLoad = true;
+
+    const sheet = workbook.addWorksheet('Nəticələr', {
+      views: [{ state: 'frozen', ySplit: 2 }],
+      properties: { defaultRowHeight: 20 },
+    });
+    sheet.mergeCells('A1:E1');
+    sheet.getCell('A1').value = 'Tələbə məlumatları';
+    sheet.mergeCells('F1:H1');
+    sheet.getCell('F1').value = 'İngilis dili səviyyəsi';
+    sheet.getRow(2).values = ['Ad, soyad', 'FİN', 'Fakültə', 'İxtisas', 'Akademik qrup', 'Total score', 'Level', 'Note'];
+
+    for (const item of rows) {
+      sheet.addRow([item.fullName, item.fin, item.faculty, item.specialty, item.group, item.score, item.level, item.note]);
+    }
+
+    const darkBlue = 'FF1E3A5F';
+    const lightBlue = 'FFDCE6F1';
+    for (const rowNumber of [1, 2]) {
+      const row = sheet.getRow(rowNumber);
+      row.height = rowNumber === 1 ? 27 : 25;
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.font = { bold: true, color: { argb: rowNumber === 1 ? 'FFFFFFFF' : 'FF17324D' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rowNumber === 1 ? darkBlue : lightBlue } };
+        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        cell.border = { bottom: { style: 'thin', color: { argb: 'FF9FB3C8' } } };
+      });
+    }
+    sheet.columns = [
+      { width: 28 }, { width: 14 }, { width: 34 }, { width: 36 },
+      { width: 18 }, { width: 13 }, { width: 22 }, { width: 12 },
+    ];
+    sheet.autoFilter = { from: 'A2', to: `H${Math.max(2, rows.length + 2)}` };
+    sheet.getColumn(6).numFmt = '0.0';
+    sheet.getColumn(6).alignment = { horizontal: 'center' };
+    sheet.getColumn(8).alignment = { horizontal: 'center' };
+    for (let rowNumber = 3; rowNumber <= rows.length + 2; rowNumber += 1) {
+      const row = sheet.getRow(rowNumber);
+      row.alignment = { vertical: 'middle' };
+      if (rowNumber % 2 === 0) {
+        row.eachCell({ includeEmpty: true }, (cell) => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4F7FA' } };
+        });
+      }
+    }
+
+    const rubric = workbook.addWorksheet('Səviyyə bölgüsü', { views: [{ state: 'frozen', ySplit: 1 }] });
+    rubric.addRow(['Total score', 'Level', 'Note']);
+    [
+      ['0–15', 'Beginner', 'A1'],
+      ['16–24', 'Elementary', 'A2'],
+      ['25–32', 'Pre-intermediate', 'B1'],
+      ['33–39', 'Intermediate', 'B1+/B2'],
+      ['40–45', 'Upper Intermediate', 'B2'],
+      ['46–50', 'Advanced', 'C1/C2'],
+    ].forEach((item) => rubric.addRow(item));
+    rubric.columns = [{ width: 18 }, { width: 25 }, { width: 14 }];
+    rubric.getRow(1).height = 26;
+    rubric.getRow(1).eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: darkBlue } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+    rubric.getColumn(1).alignment = { horizontal: 'center' };
+    rubric.getColumn(3).alignment = { horizontal: 'center' };
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', "attachment; filename*=UTF-8''ingilis-dili-seviyye-neticesi.xlsx");
+    res.send(Buffer.from(buffer));
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Excel hesabatı hazırlana bilmədi.' });
+  }
+};
+
 const importSpeakingScores = async (req, res) => {
   const examId = Number(req.params.id);
   const dryRun = String(req.query.dryRun ?? 'true').toLowerCase() !== 'false';
@@ -997,4 +1132,4 @@ const restartTestStudentExam = async (req, res) => {
   res.json({ message: 'Test cəhdi sıfırlandı.' });
 };
 
-module.exports = { getExams, getConfig, getConfigById, saveConfig, getQuestions, createQuestion, updateQuestion, removeQuestion, importTestQuestions, uploadListeningAudio, setEssayTeachers, getResults, setSpeakingScore, importSpeakingScores, studentLogin, getStudentExam, answerStudentQuestion, finishStudentExam, restartTestStudentExam, finalizeExpiredLevelAttempts };
+module.exports = { getExams, getConfig, getConfigById, saveConfig, getQuestions, createQuestion, updateQuestion, removeQuestion, importTestQuestions, uploadListeningAudio, setEssayTeachers, getResults, exportLevelResults, setSpeakingScore, importSpeakingScores, studentLogin, getStudentExam, answerStudentQuestion, finishStudentExam, restartTestStudentExam, finalizeExpiredLevelAttempts };
