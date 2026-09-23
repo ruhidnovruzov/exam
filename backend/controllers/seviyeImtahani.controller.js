@@ -519,6 +519,72 @@ const exportLevelResults = async (req, res) => {
       }
     }
 
+    const usedSheetNames = new Set(workbook.worksheets.map((item) => item.name));
+    usedSheetNames.add('Səviyyə bölgüsü');
+    const uniqueSheetName = (value) => {
+      const cleaned = normalize(value).replace(/[\\/*?:[\]]/g, ' ').replace(/\s+/g, ' ').trim() || 'Fakültə məlum deyil';
+      const base = cleaned.slice(0, 31);
+      let candidate = base;
+      let suffix = 2;
+      while (usedSheetNames.has(candidate)) {
+        const ending = ` ${suffix}`;
+        candidate = `${base.slice(0, 31 - ending.length)}${ending}`;
+        suffix += 1;
+      }
+      usedSheetNames.add(candidate);
+      return candidate;
+    };
+
+    const facultyGroups = new Map();
+    for (const item of rows) {
+      const facultyName = item.faculty || 'Fakültə məlum deyil';
+      if (!facultyGroups.has(facultyName)) facultyGroups.set(facultyName, []);
+      facultyGroups.get(facultyName).push(item);
+    }
+
+    const facultyNames = [...facultyGroups.keys()].sort((left, right) => left.localeCompare(right, 'az'));
+    for (const facultyName of facultyNames) {
+      const facultyRows = facultyGroups.get(facultyName);
+      const facultySheet = workbook.addWorksheet(uniqueSheetName(facultyName), {
+        views: [{ state: 'frozen', ySplit: 2 }],
+        properties: { defaultRowHeight: 20 },
+      });
+      facultySheet.mergeCells('A1:H1');
+      facultySheet.getCell('A1').value = facultyName;
+      facultySheet.getRow(2).values = ['Ad, soyad', 'FİN', 'Fakültə', 'İxtisas', 'Akademik qrup', 'Total score', 'Level', 'Note'];
+      for (const item of facultyRows) {
+        facultySheet.addRow([item.fullName, item.fin, item.faculty, item.specialty, item.group, item.score, item.level, item.note]);
+      }
+
+      for (const rowNumber of [1, 2]) {
+        const headerRow = facultySheet.getRow(rowNumber);
+        headerRow.height = rowNumber === 1 ? 27 : 25;
+        headerRow.eachCell({ includeEmpty: true }, (cell) => {
+          cell.font = { bold: true, color: { argb: rowNumber === 1 ? 'FFFFFFFF' : 'FF17324D' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rowNumber === 1 ? darkBlue : lightBlue } };
+          cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+          cell.border = { bottom: { style: 'thin', color: { argb: 'FF9FB3C8' } } };
+        });
+      }
+      facultySheet.columns = [
+        { width: 28 }, { width: 14 }, { width: 34 }, { width: 36 },
+        { width: 18 }, { width: 13 }, { width: 22 }, { width: 12 },
+      ];
+      facultySheet.autoFilter = { from: 'A2', to: `H${Math.max(2, facultyRows.length + 2)}` };
+      facultySheet.getColumn(6).numFmt = '0.0';
+      facultySheet.getColumn(6).alignment = { horizontal: 'center' };
+      facultySheet.getColumn(8).alignment = { horizontal: 'center' };
+      for (let rowNumber = 3; rowNumber <= facultyRows.length + 2; rowNumber += 1) {
+        const dataRow = facultySheet.getRow(rowNumber);
+        dataRow.alignment = { vertical: 'middle' };
+        if (rowNumber % 2 === 0) {
+          dataRow.eachCell({ includeEmpty: true }, (cell) => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4F7FA' } };
+          });
+        }
+      }
+    }
+
     const rubric = workbook.addWorksheet('Səviyyə bölgüsü', { views: [{ state: 'frozen', ySplit: 1 }] });
     rubric.addRow(['Total score', 'Level', 'Note']);
     [
